@@ -1,30 +1,31 @@
-import os
+import os, io
 import sys
 import re
 import json
 
+ua_file_handle: io.BufferedReader = None
+
 def get_field_number(ua_path: str, cag_offset: int) -> int:
-    with open(ua_path, 'rb') as f:
-        f.seek(cag_offset)
+    ua_file_handle.seek(cag_offset)
 
-        search_window = f.read(100)
+    search_window = f.read(100)
 
-        # lea edx, [r8+?]
-        # or "41 8D 50 ?"
+    # lea edx, [r8+?]
+    # or "41 8D 50 ?"
 
-        pattern = b'\x41\x8D\x50'
+    pattern = b'\x41\x8D\x50'
 
-        match = re.search(pattern, search_window)
+    match = re.search(pattern, search_window)
 
-        if match is None:
-            return -1
+    if match is None:
+        return -1
 
-        offset = match.start()
+    offset = match.start()
 
-        # Get the field number
-        field_number = search_window[offset + 3]
+    # Get the field number
+    field_number = search_window[offset + 3]
 
-        return field_number
+    return field_number
 
 
 def dump_message_class(class_contents: str, protos: dict, base_type: str = "") -> None:
@@ -132,56 +133,65 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if not os.path.exists(sys.argv[2]):
-        print("UserAssembly.dll does not exist")
+        print("(User/Game)Assembly.dll does not exist")
         sys.exit(1)
 
     protos = {}
 
-    # Open the file and read the contents
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        contents = f.read()
+    try:
+        ua_file_handle = open(sys.argv[2], "rb")
 
-        # Match all lines that contain // Namespace: proto and make it into a list with offset
-        proto_types = [(m.start(0), m.group(0)) for m in re.finditer(r"// Namespace: proto", contents)]
+        # Open the file and read the contents
+        with open(sys.argv[1], "r", encoding="utf-8") as f:
+            contents = f.read()
 
-        # Parse the C# class
-        for offset, line in proto_types:
-            # Example class:
-            # // Namespace: proto
-            # [ProtoContractAttribute] // RVA: 0x509D40 Offset: 0x509140 VA: 0x180509D40
-            # [Serializable]
-            # public class AvatarSubSkill : IExtensible // TypeDefIndex: 3041
+            # Match all lines that contain // Namespace: proto and make it into a list with offset
+            proto_types = [(m.start(0), m.group(0)) for m in re.finditer(r"// Namespace: proto", contents)]
 
-            # Get the class contents
-            class_contents = contents[offset:contents.find("}\n\n//", offset) + 2]
-            
-            # Get the class name
-            if "public class" not in class_contents:
-                if "public enum" in class_contents:
-                    dump_enum_class(class_contents, protos)
+            # Parse the C# class
+            for offset, line in proto_types:
+                # Example class:
+                # // Namespace: proto
+                # [ProtoContractAttribute] // RVA: 0x509D40 Offset: 0x509140 VA: 0x180509D40
+                # [Serializable]
+                # public class AvatarSubSkill : IExtensible // TypeDefIndex: 3041
+
+                # Get the class contents
+                class_contents = contents[offset:contents.find("}\n\n//", offset) + 2]
+
+                # Get the class name
+                if "public class" not in class_contents:
+                    if "public enum" in class_contents:
+                        dump_enum_class(class_contents, protos)
+                    else:
+                        ...
                 else:
-                    ...
-            else:
-                dump_message_class(class_contents, protos)
+                    dump_message_class(class_contents, protos)
 
-            #Get class nested types
-            if "public class" in class_contents:
-                class_name = class_contents.split("public class ")[1].split(" :")[0]
+                #Get class nested types
+                if "public class" in class_contents:
+                    class_name = class_contents.split("public class ")[1].split(" :")[0]
 
-                #Enums
-                class_nested_enums = [(m.start(0), m.group(0)) for m in re.finditer(rf"public enum {class_name}\.([a-zA-Z]+)", contents)]
-            
-                for enum_offset, enum_line in class_nested_enums:
-                    enum_contents = contents[enum_offset:contents.find("}\n\n//", enum_offset) + 2]
-                    dump_enum_class(enum_contents, protos, class_name)      
+                    #Enums
+                    class_nested_enums = [(m.start(0), m.group(0)) for m in re.finditer(rf"public enum {class_name}\.([a-zA-Z]+)", contents)]
 
-                #Nested classes/protos/types
-                class_nested_classes = [(m.start(0), m.group(0)) for m in re.finditer(rf"public class {class_name}\.([a-zA-Z]+)", contents)]
-            
-                for class_offset, class_line in class_nested_classes:
-                    subclass_contents = contents[class_offset:contents.find("}\n\n//", class_offset) + 2]
-                    dump_message_class(subclass_contents, protos, class_name)      
+                    for enum_offset, enum_line in class_nested_enums:
+                        enum_contents = contents[enum_offset:contents.find("}\n\n//", enum_offset) + 2]
+                        dump_enum_class(enum_contents, protos, class_name)      
+
+                    #Nested classes/protos/types
+                    class_nested_classes = [(m.start(0), m.group(0)) for m in re.finditer(rf"public class {class_name}\.([a-zA-Z]+)", contents)]
+
+                    for class_offset, class_line in class_nested_classes:
+                        subclass_contents = contents[class_offset:contents.find("}\n\n//", class_offset) + 2]
+                        dump_message_class(subclass_contents, protos, class_name)
+
+        # Write the protos to a json file
+        with open("protos.json", "w") as f:
+            print("Dumping completed, writing...")
+            json.dump(protos, f, indent=4)
+
+    finally:
+        ua_file_handle.close()
     
-    # Write the protos to a json file
-    with open("protos.json", "w") as f:
-        json.dump(protos, f, indent=4)
+    print("Done!")
